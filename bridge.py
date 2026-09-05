@@ -12,6 +12,7 @@ Schéma des topics (root = config.root_topic, "hmd" par défaut) :
 
   hmd/sensor/<Nom>/Call-state/state        publié   idle | ringing | dismissed
   hmd/sensor/<Nom>/Door-unlocked/state     publié   JSON {relay, unlock_type, control_source, card_user_id, timestamp}
+  hmd/sensor/<Nom>/Access-attempt/state    publié   JSON {result_raw, type_raw, card_no, timestamp} (encodage brut, voir on_access_attempt)
   hmd/sensor/<Nom>/availability/state      publié   online | offline
   hmd/switch/<Nom>/Door-N-relay/state      publié   ON (impulsion) puis OFF
   hmd/switch/<Nom>/Door-N-relay/set        écouté   "ON" (durée par défaut) | "<secondes>" (durée custom)
@@ -52,6 +53,10 @@ def _door_unlocked_topic(root: str, name: str) -> str:
     return f"{root}/sensor/{name}/Door-unlocked/state"
 
 
+def _access_attempt_topic(root: str, name: str) -> str:
+    return f"{root}/sensor/{name}/Access-attempt/state"
+
+
 def _availability_topic(root: str, name: str) -> str:
     return f"{root}/sensor/{name}/availability/state"
 
@@ -71,6 +76,10 @@ class MQTTBridge:
         self._config = config
         self._doorbells = doorbells
         self._loop = asyncio.get_running_loop()
+        # Relais (nom_portier, relay_id) actuellement ouverts suite à une
+        # commande MQTT `/set` en cours de traitement -> voir
+        # _pulse_and_publish / on_door_unlocked pour la dé-duplication.
+        self._pending_relay_commands: set[tuple[str, int]] = set()
 
         self._client = mqtt.Client(client_id="hikvision-mqtt-bridge", protocol=mqtt.MQTTv311)
         if config.mqtt.username:
@@ -209,11 +218,27 @@ class MQTTBridge:
             logger.error("Erreur lors du traitement d'une commande MQTT: {}", error)
 
     async def _pulse_and_publish(self, doorbell: Doorbell, relay_id: int, duration: Optional[float]):
+        """Déclenche l'impulsion suite à une commande MQTT `/set` et publie
+        l'état ON/OFF correspondant.
+
+        Le device renvoie souvent aussi son propre événement de
+        déverrouillage pour CETTE même action (voir `on_door_unlocked`) :
+        pour éviter de publier ON/OFF deux fois (et donc deux notifications
+        Node-RED/Jeedom pour une seule ouverture réelle — bug corrigé le
+        05/09/2026), on marque ce relais comme "déjà géré par une commande en
+        cours" pendant toute la durée de l'impulsion ; `on_door_unlocked`
+        ignore alors la republication de l'état s'il détecte cette marque.
+        """
         root = self._config.root_topic
         topic = _relay_topic(root, doorbell.name, doorbell.device_type, relay_id, "state")
-        self.publish(topic, "ON")
-        await doorbell.pulse_relay(relay_id, duration)
-        self.publish(topic, "OFF")
+        key = (doorbell.name, relay_id)
+        self._pending_relay_commands.add(key)
+        try:
+            self.publish(topic, "ON")
+            await doorbell.pulse_relay(relay_id, duration)
+            self.publish(topic, "OFF")
+        finally:
+            self._pending_relay_commands.discard(key)
 
     async def _do_reboot(self, doorbell: Doorbell):
         try:
@@ -243,18 +268,46 @@ class MQTTBridge:
     async def on_door_unlocked(self, doorbell: Doorbell, relay_id: int, info: dict):
         """Appelé pour CHAQUE déverrouillage détecté par le device, que ce
         soit suite à une commande MQTT de ce pont, ou à toute autre source
-        (badge, code, bouton physique...). C'est la source de vérité pour
-        l'état du switch Door/Com-N-relay, pas la commande MQTT elle-même."""
+        (badge, code, bouton physique...).
+
+        Le topic JSON Door-unlocked est TOUJOURS publié, quelle que soit la
+        source (utile pour savoir qui a ouvert, même par badge). En revanche,
+        l'état ON/OFF du switch Door/Com-N-relay n'est republié ici QUE si ce
+        déverrouillage ne correspond pas à une commande MQTT `/set` déjà en
+        cours de traitement (voir `_pulse_and_publish`) : sinon on aurait
+        deux publications ON/OFF pour une seule ouverture réelle."""
         root = self._config.root_topic
 
         payload = json.dumps({**info, "timestamp": datetime.now().isoformat(timespec="seconds")})
         self.publish(_door_unlocked_topic(root, doorbell.name), payload, retain=False)
         logger.info("[{}] Relais {} déverrouillé (source: {})", doorbell.name, relay_id, info.get("unlock_type"))
 
+        if (doorbell.name, relay_id) in self._pending_relay_commands:
+            logger.debug("[{}] État du relais {} déjà géré par la commande MQTT en cours, pas de republication",
+                         doorbell.name, relay_id)
+            return
+
         relay_state_topic = _relay_topic(root, doorbell.name, doorbell.device_type, relay_id, "state")
         self.publish(relay_state_topic, "ON")
         await asyncio.sleep(doorbell.get_pulse_duration(relay_id))
         self.publish(relay_state_topic, "OFF")
+
+    async def on_access_attempt(self, doorbell: Doorbell, info: dict):
+        """Publie CHAQUE tentative d'authentification détectée par le
+        device (badge, code, empreinte, visage...), qu'elle réussisse ou
+        échoue.
+
+        IMPORTANT : Hikvision ne documente nulle part publiquement
+        l'encodage de byAuthResult/byAuthType (voir events.py). On publie
+        donc les valeurs BRUTES (result_raw, type_raw) sans les interpréter
+        -> à toi de faire un test réussi puis un test raté et de comparer
+        les deux payloads MQTT pour identifier quelle valeur signifie
+        "échec", avant de câbler une alerte automatique côté Node-RED."""
+        topic = _access_attempt_topic(self._config.root_topic, doorbell.name)
+        payload = json.dumps({**info, "timestamp": datetime.now().isoformat(timespec="seconds")})
+        self.publish(topic, payload, retain=False)
+        logger.info("[{}] Tentative d'authentification (brut: result={}, type={}, card_no={})",
+                    doorbell.name, info.get("result_raw"), info.get("type_raw"), info.get("card_no"))
 
     def set_availability(self, doorbell: Doorbell, online: bool):
         self.publish(_availability_topic(self._config.root_topic, doorbell.name),

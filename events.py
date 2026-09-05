@@ -38,6 +38,7 @@ from sdk.utils import SDKError
 # Signatures des callbacks fournis par bridge.py
 OnCallState = Callable[[Doorbell, str], Awaitable[None]]
 OnDoorUnlocked = Callable[[Doorbell, int, dict], Awaitable[None]]
+OnAccessAttempt = Callable[[Doorbell, dict], Awaitable[None]]
 
 
 class EventManager:
@@ -50,11 +51,13 @@ class EventManager:
         doorbells: Registry,
         on_call_state: OnCallState,
         on_door_unlocked: OnDoorUnlocked,
+        on_access_attempt: OnAccessAttempt,
     ):
         self._sdk = sdk
         self._doorbells = doorbells
         self._on_call_state = on_call_state
         self._on_door_unlocked = on_door_unlocked
+        self._on_access_attempt = on_access_attempt
         # On garde une référence à la boucle asyncio courante : le callback SDK
         # arrive sur un thread natif (C), il faut basculer explicitement dans
         # la boucle asyncio pour pouvoir faire du MQTT/await proprement.
@@ -127,10 +130,15 @@ class EventManager:
             logger.debug("[{}] Type d'événement inconnu ({}), ignoré", doorbell.name, event_info.byEventType)
             return
 
-        if event_type != VideoInterComEventType.UNLOCK_LOG:
-            # authentication_log, plaques, cartes... hors périmètre.
+        if event_type == VideoInterComEventType.UNLOCK_LOG:
+            await self._handle_unlock_log(doorbell, event_info)
+        elif event_type == VideoInterComEventType.AUTHENTICATION_LOG:
+            await self._handle_authentication_log(doorbell, event_info)
+        else:
+            # plaques, cartes émises... hors périmètre.
             return
 
+    async def _handle_unlock_log(self, doorbell: Doorbell, event_info: NET_DVR_VIDEO_INTERCOM_EVENT):
         record = event_info.uEventInfo.struUnlockRecord
         # wLockID est 0-based côté SDK, +1 pour retrouver le numéro affiché
         # dans les topics MQTT (Door-1-relay = relay 1), voir doorbell.py.
@@ -148,3 +156,22 @@ class EventManager:
             "card_user_id": record.dwCardUserID,
         }
         await self._on_door_unlocked(doorbell, relay_id, info)
+
+    async def _handle_authentication_log(self, doorbell: Doorbell, event_info: NET_DVR_VIDEO_INTERCOM_EVENT):
+        """Chaque tentative d'authentification (badge, code, empreinte,
+        visage...), réussie OU échouée.
+
+        IMPORTANT : le SDK Hikvision ne documente nulle part publiquement
+        l'encodage exact de byAuthResult (quelle valeur = succès vs échec)
+        ni de byAuthType (quelle valeur = badge/code/empreinte/visage). On
+        remonte donc les valeurs BRUTES telles quelles ; c'est à bridge.py
+        (et au final à toi, en testant un accès valide puis un accès
+        refusé) de déterminer laquelle des deux valeurs signifie "échec"
+        avant de câbler une alerte automatique dessus."""
+        auth = event_info.uEventInfo.struAuthInfo
+        info = {
+            "result_raw": auth.byAuthResult,
+            "type_raw": auth.byAuthType,
+            "card_no": auth.cardNo(),
+        }
+        await self._on_access_attempt(doorbell, info)

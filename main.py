@@ -105,6 +105,7 @@ async def main():
         sdk, registry,
         on_call_state=bridge.on_call_state,
         on_door_unlocked=bridge.on_door_unlocked,
+        on_access_attempt=bridge.on_access_attempt,
     )
     event_manager.start()
 
