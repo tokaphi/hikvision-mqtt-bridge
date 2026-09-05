@@ -1,8 +1,9 @@
 # hikvision-mqtt-bridge
 
 Version simplifiée de l'add-on `pergolafabio/Hikvision-Addons`, sans `ha_mqtt_discoverable`.
-Ne fait que 3 choses : Call-state, relais en impulsion (durée paramétrable), événement
-"porte déverrouillée" + reboot à distance. Rien d'autre n'est publié sur MQTT.
+Fait 4 choses : Call-state, relais en impulsion (durée paramétrable), événement
+"porte déverrouillée", reboot à distance, et remontée brute des tentatives
+d'authentification (badge/code/empreinte/visage). Rien d'autre n'est publié sur MQTT.
 
 ## Démarrage rapide
 
@@ -62,15 +63,16 @@ n'est trouvé.
 | `config.py` | Chargement de `config.json` |
 | `main.py` | Point d'entrée : câblage + reconnexion auto des portiers hors-ligne |
 
-## Topics MQTT (root `hmd` par défaut, identique à l'add-on d'origine)
+## Topics MQTT (racine configurable via `ROOT_TOPIC`, `hmd` par défaut comme l'add-on d'origine)
 
-- `hmd/sensor/<Nom>/Call-state/state` — `idle` / `ringing` / `dismissed`
-- `hmd/sensor/<Nom>/Door-unlocked/state` — JSON, publié à chaque ouverture (par MQTT ou toute autre source)
-- `hmd/sensor/<Nom>/availability/state` — `online` / `offline`
-- `hmd/switch/<Nom>/Door-N-relay/state` (portiers extérieurs) ou `Com-N-relay/state` (poste intérieur)
-- `hmd/switch/<Nom>/Door-N-relay/set` — **nouveau côté Node-RED** : publier `"ON"` (durée par défaut) ou un nombre de secondes (ex: `"8"`) pour ouvrir
-- `hmd/button/<Nom>/Reboot/set` — n'importe quel payload déclenche le reboot
-- `hmd/bridge/availability` — `online`/`offline` du service entier (Last Will Testament MQTT)
+- `<root>/sensor/<Nom>/Call-state/state` — `idle` / `ringing` / `dismissed`
+- `<root>/sensor/<Nom>/Door-unlocked/state` — JSON, publié à chaque ouverture (par MQTT ou toute autre source)
+- `<root>/sensor/<Nom>/Access-attempt/state` — JSON brut `{result_raw, type_raw, card_no}` à chaque tentative d'authentification (badge/code/empreinte/visage), réussie ou non. **Encodage non documenté par Hikvision** : sur le matériel testé, `result_raw`/`type_raw` ne distinguaient pas succès/échec — à vérifier au cas par cas avant de câbler une alerte dessus.
+- `<root>/sensor/<Nom>/availability/state` — `online` / `offline`
+- `<root>/switch/<Nom>/Door-N-relay/state` (portiers extérieurs) ou `Com-N-relay/state` (poste intérieur)
+- `<root>/switch/<Nom>/Door-N-relay/set` — **nouveau côté Node-RED** : publier `"ON"` (durée par défaut) ou un nombre de secondes (ex: `"8"`) pour ouvrir
+- `<root>/button/<Nom>/Reboot/set` — n'importe quel payload déclenche le reboot
+- `<root>/bridge/availability` — `online`/`offline` du service entier (Last Will Testament MQTT)
 
 ## Point de conception important
 
@@ -80,9 +82,10 @@ reçue : il est piloté par l'événement "déverrouillage" que renvoie le devic
 même si la porte a été ouverte autrement que via MQTT (badge, bouton physique...).
 La commande `/set` ne fait que déclencher l'ouverture ; c'est l'événement retour qui met à jour l'état.
 
-## Non testé sur device réel
+## Statut
 
-Ce code a été vérifié : syntaxe, chargement réel de `libhcnetsdk.so` (amd64), cohérence des noms
-de champs ctypes contre le SDK, logique de `get_pulse_duration`. Il n'a **pas** été testé contre
-un vrai portier Hikvision (pas d'accès réseau à ton matériel depuis cet environnement). Recommandé :
-le faire tourner en parallèle de l'add-on actuel avec `log_level: DEBUG` avant de couper l'ancien.
+Ce pont tourne en production, testé et validé sur du matériel réel (portiers extérieurs
+et poste intérieur Hikvision). Plusieurs corrections ont été apportées suite à des tests
+en conditions réelles (état du portail, sens des commandes relais, topic racine codé en
+dur...) — voir l'historique des commits. En cas de doute entre la documentation Hikvision
+et le comportement observé sur le matériel, le comportement observé fait foi.
