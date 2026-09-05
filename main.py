@@ -11,7 +11,7 @@ import sys
 
 from loguru import logger
 
-from bridge import MQTTBridge
+from bridge import MQTTBridge, _call_state_topic
 from config import load_config
 from doorbell import Doorbell, Registry
 from events import EventManager
@@ -47,18 +47,25 @@ async def _retry_offline_doorbells(registry: Registry, offline_names: set[str],
                 bridge.set_availability(doorbell, online=False)
 
 
-async def _poll_call_state(doorbell: Doorbell, bridge: MQTTBridge, interval_seconds: float):
+async def _poll_call_state(doorbell: Doorbell, bridge: MQTTBridge, root_topic: str,
+                            interval_seconds: float):
     """Sondage ISAPI du call-state, en complément de l'événement SDK.
     Nécessaire sur les firmwares récents (>= 3.7.x) qui n'envoient plus
     l'événement de sonnerie nativement (cf. DOCS.md de l'add-on d'origine).
-    On ne publie que sur CHANGEMENT, pour ne pas spammer le broker."""
+    On ne publie que sur CHANGEMENT, pour ne pas spammer le broker.
+
+    Le topic est reconstruit avec le même helper que bridge.py (racine
+    configurée via ROOT_TOPIC), et non plus codé en dur : un ancien "hmd"
+    hérité de l'add-on d'origine se republiait ici indépendamment du
+    ROOT_TOPIC choisi, et donc réapparaissait après chaque redémarrage
+    même une fois le topic supprimé côté broker."""
     last_state = None
     while True:
         await asyncio.sleep(interval_seconds)
         state = await asyncio.to_thread(doorbell.get_call_status)
         if state and state != last_state:
             last_state = state
-            bridge.publish(f"hmd/sensor/{doorbell.name}/Call-state/state", state)
+            bridge.publish(_call_state_topic(root_topic, doorbell.name), state)
             logger.debug("[{}] Call-state (polling) -> {}", doorbell.name, state)
 
 
@@ -115,7 +122,7 @@ async def main():
     for doorbell_config in config.doorbells:
         doorbell = registry[doorbell_config.name]
         background_tasks.append(asyncio.create_task(
-            _poll_call_state(doorbell, bridge, config.call_state_poll_seconds)))
+            _poll_call_state(doorbell, bridge, config.root_topic, config.call_state_poll_seconds)))
 
     logger.info("Service prêt ({} portier(s) configuré(s), {} hors-ligne au démarrage)",
                 len(registry), len(offline_names))
