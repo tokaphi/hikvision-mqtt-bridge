@@ -1,0 +1,7 @@
+# On épingle paho-mqtt < 2.0 volontairement : la v2 change la signature des
+# callbacks (on_connect/on_message prennent un paramètre `reason_code` en
+# plus) et impose de choisir une "callback API version" à la construction du
+# Client. Le code de bridge.py est écrit pour l'API "classique" (v1.x),
+# plus simple à lire pour ce projet minimal.
+paho-mqtt<2.0
+loguru>=0.7

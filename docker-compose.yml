@@ -1,0 +1,16 @@
+# À coller tel quel dans Portainer (Stacks -> Add stack -> Editor), comme tu
+# le fais déjà pour l'add-on d'origine. Remplace <TON_USER>/<TON_REPO> par le
+# chemin de ton dépôt GitHub une fois le premier build terminé (voir README).
+#
+# Contrairement à l'add-on d'origine, une seule image sert amd64 ET aarch64
+# (build multi-arch dans .github/workflows/build.yml) : pas besoin de choisir
+# un tag "-amd64" ou "-aarch64".
+
+services:
+  hikvision-mqtt-bridge:
+    image: ghcr.io/<TON_USER>/<TON_REPO>:latest
+    container_name: hikvision-mqtt-bridge
+    env_file:
+      - stack.env
+    tty: true
+    restart: unless-stopped
