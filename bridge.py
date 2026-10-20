@@ -19,6 +19,7 @@ Schéma des topics (root = config.root_topic, "hmd" par défaut) :
   hmd/switch/<Nom>/Com-N-relay/state       publié   idem, pour un poste intérieur
   hmd/switch/<Nom>/Com-N-relay/set         écouté   idem
   hmd/button/<Nom>/Reboot/set              écouté   n'importe quel payload déclenche le reboot
+  hmd/button/<Nom>/Call/set                écouté   answer | reject | hangUp (décrocher / refuser / raccrocher)
   hmd/bridge/availability                  publié   online | offline (LWT du service entier)
 """
 
@@ -63,6 +64,10 @@ def _availability_topic(root: str, name: str) -> str:
 
 def _reboot_topic(root: str, name: str) -> str:
     return f"{root}/button/{name}/Reboot/set"
+
+
+def _call_command_topic(root: str, name: str) -> str:
+    return f"{root}/button/{name}/Call/set"
 
 
 class MQTTBridge:
@@ -138,6 +143,7 @@ class MQTTBridge:
                                 "OFF", qos=1, retain=True)
 
             client.subscribe(_reboot_topic(root, name), qos=1)
+            client.subscribe(_call_command_topic(root, name), qos=1)
             client.publish(_call_state_topic(root, name), "idle", qos=1, retain=True)
             client.publish(_availability_topic(root, name), "online", qos=1, retain=True)
 
@@ -148,7 +154,7 @@ class MQTTBridge:
             logger.warning("Déconnexion MQTT inattendue (code {}), paho-mqtt va tenter de se reconnecter", rc)
 
     # ------------------------------------------------------------------
-    # Réception des commandes MQTT (Door-N-relay/set, Com-N-relay/set, Reboot/set)
+    # Réception des commandes MQTT (Door-N-relay/set, Com-N-relay/set, Reboot/set, Call/set)
     # ------------------------------------------------------------------
 
     def _on_message(self, client, userdata, msg):
@@ -172,6 +178,8 @@ class MQTTBridge:
             self._handle_relay_command(doorbell, entity, payload)
         elif domain == "button" and entity == "Reboot":
             self._handle_reboot_command(doorbell)
+        elif domain == "button" and entity == "Call":
+            self._handle_call_command(doorbell, payload)
         else:
             logger.debug("Message MQTT ignoré (hors périmètre): {}", msg.topic)
 
@@ -210,6 +218,23 @@ class MQTTBridge:
     def _handle_reboot_command(self, doorbell: Doorbell):
         future = asyncio.run_coroutine_threadsafe(self._do_reboot(doorbell), self._loop)
         future.add_done_callback(self._log_task_error)
+
+    def _handle_call_command(self, doorbell: Doorbell, payload: str):
+        """payload : answer | reject | hangUp (casse ignorée, « hangup » accepté)."""
+        commands = {c.lower(): c for c in Doorbell.CALL_COMMANDS}
+        command = commands.get(payload.strip().lower())
+        if command is None:
+            logger.warning("[{}] Commande d'appel inconnue: {!r} (attendu: {})",
+                           doorbell.name, payload, " | ".join(Doorbell.CALL_COMMANDS))
+            return
+        future = asyncio.run_coroutine_threadsafe(self._do_call_signal(doorbell, command), self._loop)
+        future.add_done_callback(self._log_task_error)
+
+    async def _do_call_signal(self, doorbell: Doorbell, command: str):
+        try:
+            await asyncio.to_thread(doorbell.call_signal, command)
+        except SDKError as err:
+            logger.error("[{}] Échec de la commande d'appel '{}': {}", doorbell.name, command, err)
 
     @staticmethod
     def _log_task_error(future: "asyncio.Future"):

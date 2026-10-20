@@ -72,6 +72,9 @@ n'est trouvé.
 - `<root>/switch/<Nom>/Door-N-relay/state` (portiers extérieurs) ou `Com-N-relay/state` (poste intérieur)
 - `<root>/switch/<Nom>/Door-N-relay/set` — **nouveau côté Node-RED** : publier `"ON"` (durée par défaut) ou un nombre de secondes (ex: `"8"`) pour ouvrir
 - `<root>/button/<Nom>/Reboot/set` — n'importe quel payload déclenche le reboot
+- `<root>/button/<Nom>/Call/set` — `answer` | `reject` | `hangUp` : décrocher / refuser / raccrocher
+  (ISAPI `PUT /ISAPI/VideoIntercom/callSignal`), ex. pour arrêter la sonnerie quand on décroche
+  depuis une tablette HomeLink
 - `<root>/bridge/availability` — `online`/`offline` du service entier (Last Will Testament MQTT)
 
 ## Point de conception important

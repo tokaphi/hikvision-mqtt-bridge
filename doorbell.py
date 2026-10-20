@@ -255,6 +255,19 @@ class Doorbell:
                 raise
         logger.info("[{}] Commande de reboot envoyée", self.name)
 
+    # Commandes d'appel acceptées par /ISAPI/VideoIntercom/callSignal (mêmes valeurs que
+    # l'add-on d'origine) : décrocher, refuser, raccrocher.
+    CALL_COMMANDS = ("answer", "reject", "hangUp")
+
+    def call_signal(self, command: str):
+        """Envoie une commande d'appel au portier (answer / reject / hangUp).
+        Sert à arrêter la sonnerie quand on décroche depuis une autre interface
+        (tablette HomeLink, Node-RED...)."""
+        body = json.dumps({"CallSignal": {"cmdType": command}})
+        response = self._call_isapi("PUT", "/ISAPI/VideoIntercom/callSignal?format=json", body)
+        logger.info("[{}] Commande d'appel '{}' envoyée (réponse: {})", self.name, command,
+                    response.strip()[:200] or "vide")
+
     def get_call_status(self) -> Optional[str]:
         """Lit l'état d'appel courant via ISAPI (idle/ringing/dismissed...).
         Utilisé par bridge.py en polling pour les firmwares qui n'envoient
