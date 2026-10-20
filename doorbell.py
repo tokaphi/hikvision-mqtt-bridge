@@ -263,7 +263,8 @@ class Doorbell:
         """Envoie une commande d'appel au portier (answer / reject / hangUp).
         Sert à arrêter la sonnerie quand on décroche depuis une autre interface
         (tablette HomeLink, Node-RED...)."""
-        body = json.dumps({"CallSignal": {"cmdType": command}})
+        # JSON compact (sans espaces), comme l'add-on d'origine : certains firmwares sont pointilleux.
+        body = json.dumps({"CallSignal": {"cmdType": command}}, separators=(",", ":"))
         response = self._call_isapi("PUT", "/ISAPI/VideoIntercom/callSignal?format=json", body)
         logger.info("[{}] Commande d'appel '{}' envoyée (réponse: {})", self.name, command,
                     response.strip()[:200] or "vide")
